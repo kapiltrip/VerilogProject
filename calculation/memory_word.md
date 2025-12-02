@@ -1,8 +1,33 @@
 # Memory load/add/store testbench encoding notes
 
-Program goal: load the word at address 120, add 45 to it, store the result at address 121, then halt. A dummy OR is inserted between every dependent pair of instructions.
+This program demonstrates memory addressing: load a word from address 120, add 45, store it at 121, and halt. The text below walks
+through the bit math in sentences before presenting the summary table.
 
-## Instruction encodings
+## Building the words step by step
+
+1. **ADDI R1, R0, 120**
+   * Opcode `ADDI = 001010`.
+   * Registers: `rs = R0 = 00000`, `rt = R1 = 00001`.
+   * Immediate: 120₁₀ → `0000_0000_0111_1000`.
+   * Concatenate → `001010 00000 00001 0000_0000_0111_1000` → grouped as `0010 1000 0000 0001 0000 0000 0111 1000` → hex
+     `0x28010078`.
+2. **OR R3, R3, R3** bubble
+   * Opcode `000101`; `rs = rt = rd = R3 = 00011`; trailing zeros.
+   * Binary `0001 0100 0110 0011 0001 1000 0000 0000` → hex `0x14631800`.
+3. **LW R2, 0(R1)**
+   * Opcode `LW = 001101`; `rs = R1 = 00001`; `rt = R2 = 00010`; immediate zero.
+   * Binary `0011 0100 0000 0010 0000 0000 0000 0000` → hex `0x34220000`.
+4. Another **OR R3, R3, R3** bubble (`0x14631800`) lets the load reach write-back before the next add uses R2.
+5. **ADDI R2, R2, 45**
+   * Opcode `001010`; `rs = R2 = 00010`; `rt = R2 = 00010`; immediate 45 → `0000_0000_0010_1101`.
+   * Binary `0010 1000 0100 0010 0000 0000 0010 1101` → hex `0x2842002d`.
+6. **OR R3, R3, R3** bubble (`0x14631800`) separates the add from the store.
+7. **SW R2, 1(R1)**
+   * Opcode `SW = 001110`; `rs = R1 = 00001`; `rt = R2 = 00010`; immediate 1 → `0000_0000_0000_0001`.
+   * Binary `0011 1000 0010 0010 0000 0000 0000 0001` → hex `0x38220001`.
+8. **HLT** closes execution: `1111 1111 0000 0000 0000 0000 0000 0000` → `0xFC000000`.
+
+## Quick reference table
 
 | # | Assembly | Fields (opcode / rs / rt / rd / imm) | 32-bit binary assembly | Hex word |
 |---|----------|--------------------------------------|-------------------------|----------|
@@ -15,23 +40,15 @@ Program goal: load the word at address 120, add 45 to it, store the result at ad
 |6|`SW R2, 1(R1)`|`001110` / `00001` / `00010` / — / `0000_0000_0000_0001`|`0011 1000 0010 0010 0000 0000 0000 0001`|`0x38220001`|
 |7|`HLT`|`111111` / — / — / — / `0000_0000_0000_0000`|`1111 1111 0000 0000 0000 0000 0000 0000`|`0xfc000000`|
 
-Notes on field ordering (matches `mips.v`): `opcode[31:26] | rs[25:21] | rt[20:16] | rd[15:11] | shamt/funct or immediate[15:0]`.
+## Hazard padding explained
 
-## Building the 32-bit words
+* The OR at index 1 keeps the load from racing the address setup in index 0.
+* The OR at index 3 allows `LW` to write R2 before `ADDI R2, R2, 45` reads it.
+* The OR at index 5 lets the add complete before the store consumes the updated R2 value.
 
-1. Use opcodes from `mips.v`: `ADDI=001010`, `OR=000101`, `LW=001101`, `SW=001110`, `HLT=111111`.
-2. Register binaries: R0=`00000`, R1=`00001`, R2=`00010`, R3=`00011`.
-3. Immediate values:
-   * `120` → `0000_0000_0111_1000`.
-   * `45`  → `0000_0000_0010_1101`.
-   * Store offset `1` → `0000_0000_0000_0001`.
-4. Concatenate opcode + `rs` + `rt` + immediate (or `rd` + zeros for the OR dummy) to form a 32-bit pattern.
-5. Group into 4-bit nibbles and convert each nibble to hex to get the machine words listed above.
+## Testbench reminders
 
-## Testbench structure recap
-
-* **Clocking:** two-phase clocks toggled for 60 iterations.
-* **Initialization:** registers prefilled with their indices; memory location 120 seeded with `85` (`uut.Mem[120] = 32'd85`).
-* **Program load:** words from the table are written to `uut.Mem[0..7]`.
-* **Hazard padding:** OR self-ops at slots 1, 3, and 5 separate back-to-back dependent instructions (ADDI→LW, LW→ADDI, ADDI→SW).
-* **Finish:** after 600 ns the bench reports `Mem[120]` and `Mem[121]`, expecting `Mem[121] = 85 + 45 = 130`.
+* Registers are initialized to their indices for easy visibility; memory location 120 starts at decimal 85 (`uut.Mem[120] = 32'd85`).
+* Program words above load into `uut.Mem[0..7]`; two-phase clocks run 60 iterations to cover the sequence safely.
+* When finished, the bench prints `Mem[120]` (original 85) and `Mem[121]` (expected 130 after adding 45), confirming that the hex
+  encodings and hazard bubbles lined up with the pipeline timing.

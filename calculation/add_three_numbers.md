@@ -1,8 +1,30 @@
 # Add-three-numbers testbench encoding notes
 
-Program goal: load immediates 10, 20, and 25 into registers, sum them in two steps, and halt. Dummy ORs are inserted to avoid pipeline hazards between dependent operations.
+This walkthrough mirrors the first demo program. The goal is simple—load three small constants (10, 20, 25), add them over two
+`ADD` operations, and halt—but the write-up lingers on the arithmetic so you can see how each hex word is born.
 
-## Instruction encodings
+## Building each instruction in words, not just tables
+
+1. **ADDI R1, R0, 10**
+   * Opcode from `mips.v`: `ADDI = 001010`.
+   * Registers: `rs = R0 = 00000`, `rt = R1 = 00001`.
+   * Immediate: decimal 10 → binary `0000_0000_0000_1010`.
+   * Concatenate: `001010 | 00000 | 00001 | 0000_0000_0000_1010` → `0010 1000 0000 0001 0000 0000 0000 1010`.
+   * Nibbles to hex: `0010→2`, `1000→8`, `0000→0`, `0001→1`, `0000→0`, `0000→0`, `0000→0`, `1010→A`, giving `0x2801000A`.
+2. **ADDI R2, R0, 20** follows the exact pattern with `rt = 00010` and immediate `0000_0000_0001_0100`, leading to
+   `0x28020014`.
+3. **ADDI R3, R0, 25** swaps in `rt = 00011` and immediate `0000_0000_0001_1001`, becoming `0x28030019`.
+4. **OR R7, R7, R7** serves as a NOP. Its opcode is `000101`; `rs = rt = rd = R7 = 00111`; the remaining 11 bits are zeros.
+   The grouped bits `0001 0100 1110 0111 0011 1000 0000 0000` map to `0x14E73800`. We reuse this exact word wherever a bubble is
+   needed.
+5. **ADD R4, R1, R2** is an R-type: opcode `000000`, `rs = R1 = 00001`, `rt = R2 = 00010`, `rd = R4 = 00100`, and 11 trailing
+   zeros. That binary becomes `0x00222000`.
+6. Another **OR R7, R7, R7** bubble at slot 6 prevents R3 from being read before R4 is written.
+7. **ADD R5, R4, R3** mirrors step 5 but with `rs = R4 = 00100`, `rt = R3 = 00011`, `rd = R5 = 00101`, yielding `0x00832800`.
+8. **HLT** ends the program. Its opcode `111111` sits in bits `[31:26]` with all lower bits zero → `1111 1111 0000 0000 0000 0000
+   0000 0000` → `0xFC000000`.
+
+## Quick reference table
 
 | # | Assembly | Fields (opcode / rs / rt / rd / imm/funct) | 32-bit binary assembly | Hex word |
 |---|----------|-------------------------------------------|-------------------------|----------|
@@ -16,18 +38,17 @@ Program goal: load immediates 10, 20, and 25 into registers, sum them in two ste
 |7|`ADD R5, R4, R3`|`000000` / `00100` / `00011` / `00101` / `00000000000`|`0000 0000 1000 0011 0101 0000 0000 0000`|`0x00832800`|
 |8|`HLT`|`111111` / — / — / — / `0000000000000000`|`1111 1111 0000 0000 0000 0000 0000 0000`|`0xfc000000`|
 
-## Building the 32-bit words
+## Why the dummy ORs matter here
 
-1. Start with opcode bits from `mips.v` (e.g., `ADDI = 001010`, `OR = 000101`, `ADD = 000000`, `HLT = 111111`).
-2. Insert register numbers in binary: R0=`00000`, R1=`00001`, R2=`00010`, R3=`00011`, R4=`00100`, R5=`00101`, R7=`00111`.
-3. For immediates, write the 16-bit value directly (e.g., decimal 10 → `0000_0000_0000_1010`).
-4. Concatenate opcode + `rs` + `rt` + `rd`/immediate/funct to form a 32-bit binary string.
-5. Group into nibbles (shown with spaces above) and translate each nibble to hex, yielding the `0x` words used in `tb_add_three_numbers.v`.
+* The first `ADD` needs the results of two back-to-back `ADDI` instructions. A bubble after the immediate loads lets both writes
+  finish before `ADD R4, R1, R2` reads `R1` and `R2`.
+* The final `ADD` depends on `R4` from the previous `ADD`, so another bubble ensures the pipeline has time to write back before the
+  read.
 
-## Testbench structure recap
+## How the testbench uses these words
 
-* **Clocking:** two-phase clocks toggled in a 50-cycle loop (`#5` edges).
-* **Initialization:** every register preloaded with its index for visibility; `PC`, `halted`, and `taken_branch` cleared.
-* **Program load:** words in the table are written to `uut.Mem[0..8]` in order.
-* **Hazard padding:** OR self-ops at slots 3, 4, and 6 provide pipeline bubbles between dependent ADD/ADDI instructions.
-* **Finish:** after 500 ns, the bench prints `R0–R5` to show `R5 = 55`.
+* Registers start with their index as a readable baseline (R0=0, R1=1, …). `PC`, `halted`, and `taken_branch` are cleared.
+* The table entries are written into `uut.Mem[0..8]` in order.
+* Two-phase clocks tick for 50 iterations, plenty for this short program.
+* After execution, the bench prints `R0`–`R5`. When everything is correct, `R5` shows `55` (10 + 20 + 25), proving the encodings
+  and bubbles align with the pipeline timing.
